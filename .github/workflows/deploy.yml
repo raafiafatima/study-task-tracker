@@ -1,0 +1,113 @@
+name: Deploy Study Task Tracker
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: study-task-tracker-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test the three-tier app
+        run: sh scripts/test.sh
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-3
+      REGISTRY: 610331149158.dkr.ecr.ap-northeast-3.amazonaws.com
+      ASG_NAME: cc-cea-app-asg
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sign in to AWS
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::610331149158:role/cc-cea-github-deploy-role
+          aws-region: ap-northeast-3
+
+      - name: Build and publish images
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "$REGISTRY"
+
+          for tier in web api; do
+            image="$REGISTRY/study-tracker-$tier:$GITHUB_SHA"
+            docker build --platform linux/amd64 -t "$image" "./$tier"
+            docker push "$image"
+          done
+
+      - name: Create release and refresh EC2
+        run: |
+          template_id=$(aws ec2 describe-launch-templates \
+            --launch-template-names cc-cea-app-template \
+            --query 'LaunchTemplates[0].LaunchTemplateId' --output text)
+          current_version=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query 'AutoScalingGroups[0].LaunchTemplate.Version' --output text)
+
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          bootstrap = Path("deploy/bootstrap.sh").read_text()
+          compose = Path("compose.aws.yaml").read_text().rstrip()
+          startup = bootstrap.replace("__IMAGE_TAG__", os.environ["GITHUB_SHA"])
+          startup = startup.replace("__COMPOSE_YAML__", compose).rstrip() + "\n"
+          user_data = base64.b64encode(startup.encode()).decode()
+          Path("/tmp/cc-cea-launch-data.json").write_text(
+              json.dumps({"UserData": user_data})
+          )
+          PY
+
+          version=$(aws ec2 create-launch-template-version \
+            --launch-template-id "$template_id" \
+            --source-version "$current_version" \
+            --version-description "$GITHUB_SHA" \
+            --launch-template-data file:///tmp/cc-cea-launch-data.json \
+            --query 'LaunchTemplateVersion.VersionNumber' --output text)
+
+          refresh_id=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --desired-configuration "LaunchTemplate={LaunchTemplateId=$template_id,Version=$version}" \
+            --preferences "MinHealthyPercentage=100,MaxHealthyPercentage=200,InstanceWarmup=120,AutoRollback=true" \
+            --query InstanceRefreshId --output text)
+
+          for attempt in $(seq 1 100); do
+            status=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --instance-refresh-ids "$refresh_id" \
+              --query 'InstanceRefreshes[0].Status' --output text)
+            echo "Refresh $refresh_id: $status"
+
+            case "$status" in
+              Successful) exit 0 ;;
+              Failed|Cancelled|RollbackInProgress|RollbackFailed|RollbackSuccessful)
+                aws autoscaling describe-instance-refreshes \
+                  --auto-scaling-group-name "$ASG_NAME" \
+                  --instance-refresh-ids "$refresh_id" \
+                  --query 'InstanceRefreshes[0].StatusReason' --output text
+                exit 1
+                ;;
+            esac
+
+            sleep 15
+          done
+
+          echo "Timed out waiting for refresh $refresh_id"
+          exit 1
