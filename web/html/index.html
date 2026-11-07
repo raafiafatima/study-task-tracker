@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Study Task Tracker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1 id="page-heading">Study Task Tracker</h1>
+
+    <form id="task-form" novalidate>
+      <label for="title">What do you need to study?</label>
+      <div class="field">
+        <input id="title" name="title" type="text" maxlength="120"
+               autocomplete="off" required
+               placeholder="Revise the TCP handshake">
+        <button id="add-button" type="submit">Add Task</button>
+      </div>
+      <p id="form-message" class="message" role="alert"></p>
+    </form>
+
+    <section aria-labelledby="list-heading">
+      <h2 id="list-heading">Saved tasks</h2>
+      <p id="status" class="status" role="status"></p>
+      <button id="retry-button" class="secondary" type="button" hidden>Try again</button>
+      <ul id="task-list"></ul>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

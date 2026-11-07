@@ -1,0 +1,14 @@
+# Test overlay: adds a one-shot smoke-test container on the same Compose
+# network, so the tests go through Nginx exactly like a browser would.
+# Use via scripts/test.ps1 or scripts/test.sh (they isolate the project).
+services:
+  smoke:
+    image: python:3.12-slim
+    environment:
+      BASE_URL: http://web
+    volumes:
+      - ./scripts/smoke_test.py:/smoke_test.py:ro
+    command: ["python", "/smoke_test.py"]
+    depends_on:
+      web:
+        condition: service_healthy

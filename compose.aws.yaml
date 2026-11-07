@@ -1,0 +1,43 @@
+# EC2 deployment: Nginx + Flask only. PostgreSQL is a private RDS instance.
+#
+# Required shell variables (pass them on the command line or export them):
+#   WEB_IMAGE  full ECR image URI and tag for the web image
+#   API_IMAGE  full ECR image URI and tag for the api image
+# Optional:
+#   API_ENV_FILE        path to the runtime DB settings file (default ./api.aws.env)
+#   RDS_CA_BUNDLE_FILE  host path of the RDS CA bundle (default ./certs/global-bundle.pem)
+name: study-task-tracker
+
+services:
+  api:
+    image: ${API_IMAGE:?Set API_IMAGE to the exact ECR image URI and tag}
+    env_file:
+      - path: ${API_ENV_FILE:-./api.aws.env}
+        required: true
+    volumes:
+      - ${RDS_CA_BUNDLE_FILE:-./certs/global-bundle.pem}:/certs/global-bundle.pem:ro
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    image: ${WEB_IMAGE:?Set WEB_IMAGE to the exact ECR image URI and tag}
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
